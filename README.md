@@ -38,24 +38,10 @@ dependencyResolutionManagement {
 ### 2. Agregar dependencia
 
 ```gradle
-implementation("com.github.TU_USUARIO:artpaylib:1.0.0")
-```
-
-Ejemplo:
-
-```gradle
 implementation("com.github.lenier522:artpaylib:1.0.0")
 ```
 
 ---
-
-## ⚙️ Configuración
-
-Antes de usar la librería, configura la URL de tu backend:
-
-```kotlin
-ArtPayService.baseUrl = "http://TU_IP:8080"
-```
 
 ---
 
@@ -140,22 +126,12 @@ La librería valida automáticamente:
 
 ## ⚠️ Requisitos
 
-* Android SDK 21+
+* Android SDK 24+
 * Kotlin
 * Conexión a internet
 * Backend Art-Pay activo
 
 ---
-
-## 🧱 Estructura interna
-
-```
-cu.lenier.artpay
-│
-├── ArtPayManager              // Flujo completo (UI + lógica)
-├── ArtPayService              // Comunicación con backend
-└── ArtPayVerificationResult   // Resultado de verificación
-```
 
 ---
 
