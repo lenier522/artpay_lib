@@ -29,7 +29,8 @@ object ArtPayService {
     suspend fun verifyLicense(
         licenseFile: File,
         targetLicenseName: String,
-        packageName: String = ""
+        packageName: String = "",
+        devicePhoneNumber: String = ""
     ): ArtPayVerificationResult = withContext(Dispatchers.IO) {
         try {
             val fileContent = licenseFile.readText(Charsets.UTF_8)
@@ -49,7 +50,7 @@ object ArtPayService {
                 readTimeout = 15_000
             }
 
-            val body = """{"encryptedLicense": "$safeContent", "expectedPackageName": "$packageName", "expectedLicenseTier": "$targetLicenseName"}"""
+            val body = """{"encryptedLicense": "$safeContent", "expectedPackageName": "$packageName", "expectedLicenseTier": "$targetLicenseName", "devicePhoneNumber": "$devicePhoneNumber"}"""
             connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
 
             val statusCode = connection.responseCode

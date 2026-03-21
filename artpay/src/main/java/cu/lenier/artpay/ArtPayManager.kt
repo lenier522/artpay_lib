@@ -17,6 +17,12 @@ import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
+import android.telephony.TelephonyManager
+import androidx.core.content.ContextCompat
 
 /**
  * Maneja el flujo completo de selección y verificación de licencia .lic.
@@ -42,6 +48,7 @@ import java.io.FileOutputStream
 class ArtPayManager(private val activity: AppCompatActivity) {
 
     private lateinit var filePickerLauncher: ActivityResultLauncher<Intent>
+    private lateinit var permissionLauncher: ActivityResultLauncher<String>
     private var pendingTierName: String = ""
     private var pendingDisplayName: String = ""
     private var pendingRootView: View? = null
@@ -63,7 +70,18 @@ class ArtPayManager(private val activity: AppCompatActivity) {
                 snack("Por favor, selecciona un archivo .lic", isError = true)
                 return@registerForActivityResult
             }
+            }
             processLicenseFile(uri)
+        }
+
+        permissionLauncher = activity.registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) {
+                launchPicker()
+            } else {
+                snack("Se requiere permiso para leer el teléfono y validar la licencia", isError = true)
+            }
         }
     }
 
@@ -89,6 +107,17 @@ class ArtPayManager(private val activity: AppCompatActivity) {
         pendingOnSuccess = onSuccess
         pendingOnError = onError
 
+        if (ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED) {
+            launchPicker()
+        } else {
+            // Requesting READ_PHONE_STATE as it's the more common backwards compatible one, 
+            // though READ_PHONE_NUMBERS is preferred for Android 11+
+            permissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
+        }
+    }
+
+    private fun launchPicker() {
         val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
             type = "*/*"
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -107,7 +136,8 @@ class ArtPayManager(private val activity: AppCompatActivity) {
                 return@launch
             }
             showLoading()
-            val result = ArtPayService.verifyLicense(tempFile, pendingTierName, activity.packageName)
+            val phoneNumber = getDevicePhoneNumber(activity)
+            val result = ArtPayService.verifyLicense(tempFile, pendingTierName, activity.packageName, phoneNumber)
             tempFile.delete()
             hideLoading()
             handleResult(result, root)
@@ -192,5 +222,18 @@ class ArtPayManager(private val activity: AppCompatActivity) {
         val s = Snackbar.make(root, msg, Snackbar.LENGTH_LONG)
         if (isError) s.setBackgroundTint(activity.getColor(android.R.color.holo_red_dark))
         s.show()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun getDevicePhoneNumber(context: Context): String {
+        return try {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED) {
+                val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+                tm.line1Number ?: ""
+            } else {
+                ""
+            }
+        } catch (e: Exception) { "" }
     }
 }
