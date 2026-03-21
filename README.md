@@ -38,7 +38,7 @@ dependencyResolutionManagement {
 ### 2. Agregar dependencia
 
 ```gradle
-implementation("com.github.lenier522:artpaylib:1.0.0")
+implementation("com.github.lenier522:artpaylib:1.1.4")
 ```
 
 ---
