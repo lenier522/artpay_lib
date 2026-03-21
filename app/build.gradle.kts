@@ -48,9 +48,8 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
 
     // Librería ArtPay — verificación de licencias
-    // implementation(project(":artpay"))
+     implementation(project(":artpay"))
 
-    implementation("com.github.lenier522:artpay_lib:1.1.0")
 
     // Coroutines — requeridas por ArtPayService (Dispatchers.IO)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
