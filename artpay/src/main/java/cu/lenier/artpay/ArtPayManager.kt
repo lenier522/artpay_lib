@@ -70,7 +70,6 @@ class ArtPayManager(private val activity: AppCompatActivity) {
                 snack("Por favor, selecciona un archivo .lic", isError = true)
                 return@registerForActivityResult
             }
-            }
             processLicenseFile(uri)
         }
 
