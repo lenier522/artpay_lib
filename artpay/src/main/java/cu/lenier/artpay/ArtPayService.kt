@@ -20,7 +20,7 @@ import java.util.TimeZone
 object ArtPayService {
 
     /** URL base del servidor Art-Pay */
-    var baseUrl: String = "http://192.168.1.102:8080"
+    var baseUrl: String = "https://artpay.neti.cu"
 
     /**
      * Verifica una licencia .lic contra el backend.
