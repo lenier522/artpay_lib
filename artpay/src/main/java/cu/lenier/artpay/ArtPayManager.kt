@@ -48,7 +48,6 @@ import androidx.core.content.ContextCompat
 class ArtPayManager(private val activity: AppCompatActivity) {
 
     private lateinit var filePickerLauncher: ActivityResultLauncher<Intent>
-    private lateinit var permissionLauncher: ActivityResultLauncher<String>
     private var pendingTierName: String = ""
     private var pendingDisplayName: String = ""
     private var pendingRootView: View? = null
@@ -67,20 +66,10 @@ class ArtPayManager(private val activity: AppCompatActivity) {
             val uri = result.data?.data ?: return@registerForActivityResult
             val name = getFileName(uri)
             if (!name.lowercase().endsWith(".lic")) {
-                snack("Por favor, selecciona un archivo .lic", isError = true)
+                snack("Por favor, selecciona un archivo .lic válido", isError = true)
                 return@registerForActivityResult
             }
             processLicenseFile(uri)
-        }
-
-        permissionLauncher = activity.registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { granted ->
-            if (granted) {
-                launchPicker()
-            } else {
-                snack("Se requiere permiso para leer el teléfono y validar la licencia", isError = true)
-            }
         }
     }
 
@@ -106,14 +95,7 @@ class ArtPayManager(private val activity: AppCompatActivity) {
         pendingOnSuccess = onSuccess
         pendingOnError = onError
 
-        if (ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED) {
-            launchPicker()
-        } else {
-            // Requesting READ_PHONE_STATE as it's the more common backwards compatible one, 
-            // though READ_PHONE_NUMBERS is preferred for Android 11+
-            permissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
-        }
+        launchPicker()
     }
 
     private fun launchPicker() {
@@ -131,12 +113,22 @@ class ArtPayManager(private val activity: AppCompatActivity) {
 
         activity.lifecycleScope.launch {
             val tempFile = copyUriToTemp(uri) ?: run {
-                snack("No se pudo leer el archivo", isError = true)
+                snack("No se pudo leer el archivo físico de la licencia", isError = true)
                 return@launch
             }
+            if (tempFile.length() > 100 * 1024) { // mayor a 100 KB
+                snack("El archivo seleccionado no es un .lic válido (tamaño excesivo)", isError = true)
+                tempFile.delete()
+                return@launch
+            }
+
             showLoading()
-            val phoneNumber = getDevicePhoneNumber(activity)
-            val result = ArtPayService.verifyLicense(tempFile, pendingTierName, activity.packageName, phoneNumber)
+            val result = ArtPayService.verifyLicenseWithBilletera(
+                context = activity,
+                licenseFile = tempFile,
+                expectedProductToken = pendingTierName,
+                packageName = activity.packageName
+            )
             tempFile.delete()
             hideLoading()
             handleResult(result, root)
@@ -221,18 +213,5 @@ class ArtPayManager(private val activity: AppCompatActivity) {
         val s = Snackbar.make(root, msg, Snackbar.LENGTH_LONG)
         if (isError) s.setBackgroundTint(activity.getColor(android.R.color.holo_red_dark))
         s.show()
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun getDevicePhoneNumber(context: Context): String {
-        return try {
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED) {
-                val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-                tm.line1Number ?: ""
-            } else {
-                ""
-            }
-        } catch (e: Exception) { "" }
     }
 }
