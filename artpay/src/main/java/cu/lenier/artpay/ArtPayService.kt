@@ -300,6 +300,99 @@ object ArtPayService {
         return null
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // MÉTODO 4: Intent - Pago por QR / Deep Link
+    // ─────────────────────────────────────────────────────────────────
+
+    data class IntentResult(
+        val success: Boolean,
+        val intentId: String? = null,
+        val status: String? = null,
+        val licenseData: String? = null,
+        val productName: String? = null,
+        val packageName: String? = null,
+        val accessExpiresAt: java.util.Date? = null,
+        val errorMessage: String? = null
+    )
+
+    suspend fun createIntent(productToken: String): IntentResult = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("$baseUrl/api/intents?productToken=$productToken")
+            val connection = openSecureConnection(url).apply {
+                requestMethod = "POST"
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("Content-Length", "0")
+                connectTimeout = 15_000
+                readTimeout = 15_000
+                doOutput = true
+            }
+            connection.outputStream.use { it.write(ByteArray(0)) }
+
+            val statusCode = connection.responseCode
+            val responseBody = if (statusCode in 200..299) {
+                connection.inputStream.bufferedReader().readText()
+            } else {
+                connection.errorStream?.bufferedReader()?.readText() ?: ""
+            }
+            connection.disconnect()
+
+            if (statusCode in 200..299) {
+                val json = JSONObject(responseBody)
+                val data = json.optJSONObject("data")
+                IntentResult(
+                    success = true,
+                    intentId = data?.optString("id"),
+                    status = data?.optString("status")
+                )
+            } else {
+                val msg = try { JSONObject(responseBody).optString("message").ifBlank { null } } catch (_: Exception) { null }
+                IntentResult(success = false, errorMessage = msg ?: "Error al crear pago ($statusCode)")
+            }
+        } catch (e: Exception) {
+            IntentResult(success = false, errorMessage = "Error: ${e.message}")
+        }
+    }
+
+    suspend fun checkIntentStatus(intentId: String): IntentResult = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("$baseUrl/api/intents/$intentId/status")
+            val connection = openSecureConnection(url).apply {
+                requestMethod = "GET"
+                setRequestProperty("Accept", "application/json")
+                connectTimeout = 15_000
+                readTimeout = 15_000
+            }
+
+            val statusCode = connection.responseCode
+            val responseBody = if (statusCode in 200..299) {
+                connection.inputStream.bufferedReader().readText()
+            } else {
+                connection.errorStream?.bufferedReader()?.readText() ?: ""
+            }
+            connection.disconnect()
+
+            if (statusCode in 200..299) {
+                val json = JSONObject(responseBody)
+                val data = json.optJSONObject("data")
+                val expiresAt = data?.optString("accessExpiresAt")?.let { parseDate(it) }
+                IntentResult(
+                    success = true,
+                    intentId = data?.optString("id"),
+                    status = data?.optString("status"),
+                    licenseData = data?.optString("licenseData"),
+                    productName = data?.optString("productName"),
+                    packageName = data?.optString("packageName"),
+                    accessExpiresAt = expiresAt
+                )
+            } else {
+                val msg = try { JSONObject(responseBody).optString("message").ifBlank { null } } catch (_: Exception) { null }
+                IntentResult(success = false, errorMessage = msg ?: "Error check ($statusCode)")
+            }
+        } catch (e: Exception) {
+            IntentResult(success = false, errorMessage = "Error: ${e.message}")
+        }
+    }
+
     private fun escapeJson(s: String): String =
         s.replace("\\", "\\\\").replace("\"", "\\\"")
 }

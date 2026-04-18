@@ -2,44 +2,37 @@ package cu.lenier.artpay
 
 import android.app.AlertDialog
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.Uri
-import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
+import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.snackbar.Snackbar
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.io.File
-import java.io.FileOutputStream
-import android.Manifest
-import android.annotation.SuppressLint
-import android.content.Context
-import android.content.pm.PackageManager
-import android.telephony.TelephonyManager
-import androidx.core.content.ContextCompat
 
 /**
- * Maneja el flujo completo de selección y verificación de licencia .lic.
- *
- * IMPORTANTE — register() DEBE llamarse en onCreate() de la Activity:
+ * Maneja el flujo completo de pago y verificación mediante código QR e intenciones
+ * con la Billetera Art-Pay.
  *
  * ```kotlin
  * private val artPayManager = ArtPayManager(this)
  *
- * override fun onCreate(...) {
- *     artPayManager.register()
- * }
- *
- * // Para abrir el selector:
+ * // Para abrir el dialog de pago:
  * artPayManager.handlePayment(
  *     rootView = binding.root,
- *     tierName = "Pro",          // nombre exacto del producto en el backend
+ *     tierName = "Pro",          // nombre exacto del producto en el backend (productToken)
  *     displayName = "Pro",       // para mensajes de UI
  *     onSuccess = { result -> }
  * )
@@ -47,40 +40,25 @@ import androidx.core.content.ContextCompat
  */
 class ArtPayManager(private val activity: AppCompatActivity) {
 
-    private lateinit var filePickerLauncher: ActivityResultLauncher<Intent>
     private var pendingTierName: String = ""
     private var pendingDisplayName: String = ""
     private var pendingRootView: View? = null
     private var pendingOnSuccess: ((ArtPayVerificationResult) -> Unit)? = null
     private var pendingOnError: ((String) -> Unit)? = null
     private var loadingDialog: AlertDialog? = null
+    private var intentDialog: AlertDialog? = null
+    private var pollingJob: Job? = null
 
     /**
-     * Registra el selector de archivos.
-     * ⚠️ DEBE llamarse en onCreate() antes de que empiece la Activity.
+     * Compatibilidad hacia atrás (antes se registraba un launcher de archivos).
+     * Ya no hace nada, sólo mantiene la firma de la API.
      */
     fun register() {
-        filePickerLauncher = activity.registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            val uri = result.data?.data ?: return@registerForActivityResult
-            val name = getFileName(uri)
-            if (!name.lowercase().endsWith(".lic")) {
-                snack("Por favor, selecciona un archivo .lic válido", isError = true)
-                return@registerForActivityResult
-            }
-            processLicenseFile(uri)
-        }
+        // No-op
     }
 
     /**
-     * Abre el selector de archivos y ejecuta el flujo completo de verificación.
-     *
-     * @param rootView    Vista raíz para mostrar Snackbars
-     * @param tierName    Nombre del tier enviado al backend (ej: "Pro", "enterprise")
-     * @param displayName Nombre para mostrar en mensajes de UI (ej: "Pro", "Empresarial")
-     * @param onSuccess   Callback cuando la licencia es válida
-     * @param onError     Callback cuando falla (opcional)
+     * Abre un QRCode para que la Billetera pague.
      */
     fun handlePayment(
         rootView: View,
@@ -95,83 +73,133 @@ class ArtPayManager(private val activity: AppCompatActivity) {
         pendingOnSuccess = onSuccess
         pendingOnError = onError
 
-        launchPicker()
-    }
-
-    private fun launchPicker() {
-        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-            type = "*/*"
-            addCategory(Intent.CATEGORY_OPENABLE)
-        }
-        filePickerLauncher.launch(Intent.createChooser(intent, "Seleccionar licencia .lic"))
-    }
-
-    // ─── Internals ────────────────────────────────────────────────────────────
-
-    private fun processLicenseFile(uri: Uri) {
-        val root = pendingRootView ?: return
-
+        showLoading("Generando Intención de Pago...")
+        
         activity.lifecycleScope.launch {
-            val tempFile = copyUriToTemp(uri) ?: run {
-                snack("No se pudo leer el archivo físico de la licencia", isError = true)
-                return@launch
-            }
-            if (tempFile.length() > 100 * 1024) { // mayor a 100 KB
-                snack("El archivo seleccionado no es un .lic válido (tamaño excesivo)", isError = true)
-                tempFile.delete()
-                return@launch
-            }
-
-            showLoading()
-            val result = ArtPayService.verifyLicenseWithBilletera(
-                context = activity,
-                licenseFile = tempFile,
-                expectedProductToken = pendingTierName,
-                packageName = activity.packageName
-            )
-            tempFile.delete()
+            val result = ArtPayService.createIntent(pendingTierName)
             hideLoading()
-            handleResult(result, root)
+            
+            if (result.success && result.intentId != null) {
+                showQrDialog(result.intentId)
+            } else {
+                val msg = result.errorMessage ?: "Error al crear la intención de pago"
+                snack(msg, true)
+                pendingOnError?.invoke(msg)
+            }
         }
     }
 
-    private fun handleResult(result: ArtPayVerificationResult, root: View) {
-        if (!result.success) {
-            val msg = result.errorMessage ?: "Error desconocido"
-            Snackbar.make(root, msg, Snackbar.LENGTH_LONG).show()
-            pendingOnError?.invoke(msg)
-            return
+    private fun showQrDialog(intentId: String) {
+        val deepLinkUrl = "artpay://intent?id=$intentId"
+
+        val layout = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(64, 64, 64, 64)
+            gravity = Gravity.CENTER
         }
 
-        // Validar packageName — se lee automáticamente del package de la app
-        val pkg = result.packageName
-        val myPackage = activity.packageName
-        if (!pkg.isNullOrBlank() && pkg != myPackage) {
-            val msg = "Esta licencia pertenece a otra aplicación"
-            Snackbar.make(root, msg, Snackbar.LENGTH_LONG).show()
-            pendingOnError?.invoke(msg)
-            return
+        val title = TextView(activity).apply {
+            text = "Pagar con Art-Pay"
+            textSize = 20f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
         }
 
-        // Validar que el producto del backend coincida con el tier solicitado
-        val productName = result.productName?.lowercase() ?: ""
-        val tierLower = pendingTierName.lowercase()
-        val matches = productName.contains(tierLower) ||
-            (tierLower == "enterprise" && productName.contains("empresarial"))
-
-        if (!matches) {
-            val msg = "Compraste \"${result.productName}\" pero intentaste activar \"$pendingDisplayName\". Selecciona la opción correcta."
-            Snackbar.make(root, msg, Snackbar.LENGTH_LONG).show()
-            pendingOnError?.invoke(msg)
-            return
+        val qrImageView = ImageView(activity).apply {
+            setPadding(0, 32, 0, 32)
+            setImageBitmap(generateQr(deepLinkUrl))
         }
 
-        // ✅ Éxito
-        pendingOnSuccess?.invoke(result)
-        Snackbar.make(root, "¡Licencia activada! ${result.productName ?: pendingDisplayName}", Snackbar.LENGTH_LONG).show()
+        val desc = TextView(activity).apply {
+            text = "Escanea este código con la app Billetera instalada en otro móvil, o toca el botón para abrir la Billetera localmente."
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 48)
+        }
+
+        val btnOpen = Button(activity).apply {
+            text = "ABRIR ART-PAY"
+            setBackgroundColor(Color.parseColor("#1E88E5"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                val i = Intent(Intent.ACTION_VIEW, Uri.parse(deepLinkUrl))
+                try {
+                    activity.startActivity(i)
+                } catch (e: Exception) {
+                    snack("No se encontró la app Billetera instalada")
+                }
+            }
+        }
+
+        val btnCancel = Button(activity).apply {
+            text = "CANCELAR"
+            setBackgroundColor(Color.TRANSPARENT)
+            setTextColor(Color.GRAY)
+            setOnClickListener {
+                closeDialogs()
+                pendingOnError?.invoke("Pago cancelado")
+            }
+        }
+
+        layout.addView(title)
+        layout.addView(qrImageView)
+        layout.addView(desc)
+        layout.addView(btnOpen)
+        layout.addView(btnCancel)
+
+        intentDialog = AlertDialog.Builder(activity)
+            .setView(layout)
+            .setCancelable(false)
+            .create()
+        
+        intentDialog?.show()
+
+        startPolling(intentId)
     }
 
-    private fun showLoading() {
+    private fun startPolling(intentId: String) {
+        pollingJob?.cancel()
+        pollingJob = activity.lifecycleScope.launch {
+            while (isActive) {
+                delay(4000)
+                val status = ArtPayService.checkIntentStatus(intentId)
+                if (status.success) {
+                    if (status.status == "PAID") {
+                        closeDialogs()
+                        handlePaid(status)
+                        break
+                    } else if (status.status == "CANCELLED") {
+                        closeDialogs()
+                        snack("Intención de pago expirada o cancelada", true)
+                        pendingOnError?.invoke("Pago cancelado o expirado")
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handlePaid(status: ArtPayService.IntentResult) {
+        snack("¡Licencia exitosa! ${status.productName ?: pendingDisplayName}")
+        pendingOnSuccess?.invoke(
+            ArtPayVerificationResult(
+                success = true,
+                productToken = status.productName, // compatibility match
+                productName = status.productName,
+                packageName = status.packageName,
+                accessExpiresAt = status.accessExpiresAt
+            )
+        )
+    }
+
+    private fun closeDialogs() {
+        intentDialog?.dismiss()
+        intentDialog = null
+        pollingJob?.cancel()
+        pollingJob = null
+    }
+
+    private fun showLoading(msg: String) {
         val layout = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(64, 48, 64, 48)
@@ -179,7 +207,7 @@ class ArtPayManager(private val activity: AppCompatActivity) {
         }
         layout.addView(ProgressBar(activity).apply { isIndeterminate = true })
         layout.addView(TextView(activity).apply {
-            text = "Verificando licencia..."
+            text = msg
             textSize = 16f
             setPadding(0, 24, 0, 0)
             gravity = Gravity.CENTER
@@ -191,27 +219,28 @@ class ArtPayManager(private val activity: AppCompatActivity) {
 
     private fun hideLoading() { loadingDialog?.dismiss(); loadingDialog = null }
 
-    private fun copyUriToTemp(uri: Uri): File? = try {
-        val tmpFile = File(activity.cacheDir, "lic_${System.currentTimeMillis()}.lic")
-        activity.contentResolver.openInputStream(uri)?.use { inp ->
-            FileOutputStream(tmpFile).use { out -> inp.copyTo(out) }
+    private fun generateQr(content: String): Bitmap? {
+        return try {
+            val writer = QRCodeWriter()
+            val bitMatrix = writer.encode(content, BarcodeFormat.QR_CODE, 600, 600)
+            val w = bitMatrix.width
+            val h = bitMatrix.height
+            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+            for (x in 0 until w) {
+                for (y in 0 until h) {
+                    bitmap.setPixel(x, y, if (bitMatrix.get(x, y)) Color.BLACK else Color.WHITE)
+                }
+            }
+            bitmap
+        } catch (e: Exception) {
+            null
         }
-        tmpFile
-    } catch (_: Exception) { null }
-
-    private fun getFileName(uri: Uri): String {
-        var name = ""
-        activity.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (cursor.moveToFirst() && idx >= 0) name = cursor.getString(idx)
-        }
-        return name
     }
 
     private fun snack(msg: String, isError: Boolean = false) {
         val root = pendingRootView ?: activity.window?.decorView?.rootView ?: return
         val s = Snackbar.make(root, msg, Snackbar.LENGTH_LONG)
-        if (isError) s.setBackgroundTint(activity.getColor(android.R.color.holo_red_dark))
+        if (isError) s.setBackgroundTint(Color.RED)
         s.show()
     }
 }
